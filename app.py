@@ -18,13 +18,7 @@ navbar = dbc.NavbarSimple(
 )
 
 # App layout
-app.layout = dbc.Container(
-    [
-        navbar,
-        dash.page_container
-    ],
-    fluid=True
-)
+app.layout = dbc.Container([navbar, dash.page_container], fluid=True)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, dev_tools_hot_reload=False)
