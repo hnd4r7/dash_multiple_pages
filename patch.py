@@ -1,25 +1,29 @@
 import dash
+import copy
 from dash import _pages, dependencies
 import json
-from dash._callback_context import CallbackContext, callback_context
+from dash import _callback
 from typing import Dict, Any
 from dash.dash import _ID_CONTENT, _ID_LOCATION, _ID_STORE, _ID_DUMMY
+from dash._utils import to_json
 from functools import wraps
 import inspect
 
 callback_component_ids = set()
 skip_package_prefixs = ["", "."]
 skip_component_ids = {"url", _ID_CONTENT, _ID_LOCATION, _ID_STORE, _ID_DUMMY}
+prefix_sep = "||"
 
 
 def prefix_component(prefix: str, component_id):
     if isinstance(component_id, str):
         if component_id in skip_component_ids:
             return component_id
-        return f"{prefix}/{component_id}"
+        return f"{prefix}{prefix_sep}{component_id}"
     elif isinstance(component_id, dict):
         return {
-            k: f"{prefix}/{v}" if k == "type" else v for k, v in component_id.items()
+            k: f"{prefix}{prefix_sep}{v}" if k == "type" else v
+            for k, v in component_id.items()
         }
     else:
         return component_id
@@ -29,21 +33,12 @@ def prefix_component_key(prefix_component_id) -> str:
     return (
         prefix_component_id
         if isinstance(prefix_component_id, str)
-        else str({k: v for k, v in prefix_component_id.items() if k != "index"})
+        else prefix_component_id["type"]
     )
 
 
-def prefix_layout_ids(component, prefix, processed_components=None):
+def prefix_layout_ids(component, prefix):
     """Recursively prefix IDs in a Dash component tree."""
-    if processed_components is None:
-        processed_components = set()
-
-    component_obj_id = id(component)
-    if component_obj_id in processed_components:
-        return
-
-    processed_components.add(component_obj_id)
-
     if hasattr(component, "id") and component.id:
         prefix_component_id = prefix_component(prefix, component.id)
         print(f"Prefixing layout component_id -> {prefix_component_id}")
@@ -55,9 +50,9 @@ def prefix_layout_ids(component, prefix, processed_components=None):
         if isinstance(component.children, list):
             for child in component.children:
                 if child is not None:
-                    prefix_layout_ids(child, prefix, processed_components)
+                    prefix_layout_ids(child, prefix)
         elif component.children is not None:
-            prefix_layout_ids(component.children, prefix, processed_components)
+            prefix_layout_ids(component.children, prefix)
 
 
 # def find_call_module():
@@ -159,12 +154,16 @@ def patched_get_context_value():
         if prefixed_id.startswith("{"):
             original_id = json.dumps(
                 {
-                    k: v[v.index("/") + 1 :] if isinstance(v, str) and "/" in v else v
+                    k: (
+                        v[v.index(prefix_sep) + 1 :]
+                        if isinstance(v, str) and prefix_sep in v
+                        else v
+                    )
                     for k, v in json.loads(prefixed_id).items()
                 }
             )
         else:
-            _, _, original_id = prefixed_id.rpartition("/")
+            _, _, original_id = prefixed_id.rpartition(prefix_sep)
         original_prop_id = f"{original_id}.{prop}"
         items.append({"prop_id": original_prop_id, "value": item["value"]})
 
@@ -173,3 +172,43 @@ def patched_get_context_value():
 
 
 dash._callback_context._get_context_value = patched_get_context_value
+
+
+original_dispatch = dash.Dash.dispatch
+
+
+# Patched:
+# {"multi":true,"response":{"pages_pattern_dyn\\u002fdropdown-container-div":{"children":{"__dash_patch_update":"__dash_patch_update","operations":[{"operation":"Append","location":[],"params":{"value":{"props":{"options":["NYC","MTL","LA","TOKYO"],"id":{"type":"city-filter-dropdown","index":0}},"type":"Dropdown","namespace":"dash_core_components"}}}]}}}}
+# Non-Patched:
+# {"multi":true,"response":{"pages_pattern_dyn\\u002fdropdown-container-div":{"children":[{"props":{"options":["NYC","MTL","LA","TOKYO"],"id":{"type":"city-filter-dropdown","index":0}},"type":"Dropdown","namespace":"dash_core_components"}]}}}
+def prefix_resp(m, prefix):
+    if isinstance(m, dict):
+        for k, v in m.items():
+            if k == "id":
+                m[k] = prefix_component(prefix, v)
+            elif isinstance(v, dict):
+                prefix_resp(v, prefix)
+            elif isinstance(v, list):
+                for i in v:
+                    prefix_resp(i, prefix)
+
+
+@wraps(original_dispatch)
+def patched_dispatch(self):
+    """Patch Dash.dispatch to prefix component IDs in callback responses."""
+    response = original_dispatch(self)
+
+    # Deep copy the response to avoid modifying the original
+    # response_copy = copy.deepcopy(response)
+    response = response.json
+    for k, v in response["response"].items():
+        if prefix_sep not in k:
+            continue
+        prefix, _, _ = k.rpartition(prefix_sep)
+        prefix_resp(v, prefix)
+    # response.set_data(to_json(response))
+    return response
+
+
+# Apply the patch to Dash.dispatch
+dash.Dash.dispatch = patched_dispatch
