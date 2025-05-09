@@ -29,23 +29,28 @@ def prefix_component(prefix: str, component_id):
         return component_id
 
 
-def prefix_component_key(prefix_component_id) -> str:
+def component_key(component_id) -> str:
     return (
-        prefix_component_id
-        if isinstance(prefix_component_id, str)
-        else prefix_component_id["type"]
+        component_id
+        if isinstance(component_id, str)
+        else (
+            component_id["type"]
+            if isinstance(component_id, dict)
+            else str(component_id)
+        )
     )
 
 
 def prefix_layout_ids(component, prefix):
     """Recursively prefix IDs in a Dash component tree."""
     if hasattr(component, "id") and component.id:
+        if component_key(component.id) not in callback_component_ids:
+            return
         prefix_component_id = prefix_component(prefix, component.id)
         print(f"Prefixing layout component_id -> {prefix_component_id}")
+        component.id = prefix_component_id
         # we cannot add prefix for certain html component like login-button. it may corrupt the css style.
         # callback_component_id may be something like {type: xxx, index: <ALL>}, we need to match {type: xxx, index: 1} or {type: xxx, index: 2}...
-        if prefix_component_key(prefix_component_id) in callback_component_ids:
-            component.id = prefix_component_id
     if hasattr(component, "children"):
         if isinstance(component.children, list):
             for child in component.children:
@@ -53,22 +58,6 @@ def prefix_layout_ids(component, prefix):
                     prefix_layout_ids(child, prefix)
         elif component.children is not None:
             prefix_layout_ids(component.children, prefix)
-
-
-# def find_call_module():
-#     """Find the frame before dependencies.py to get the callback's directory."""
-#     frame = inspect.currentframe()
-#     while frame:
-#         call_m = inspect.getmodule(frame)
-#         print("call_m", call_m)
-#         if "__name__" in frame.f_locals and frame.f_locals["__name__"].startswith(
-#             page_parent_module
-#         ):
-#             print("page_module_name", call_m)
-#             page_module_name, _, _ = frame.f_locals["__name__"].rpartition(".")
-#             return page_module_name
-#         frame = frame.f_back
-#     return None
 
 
 def find_call_module():
@@ -96,9 +85,9 @@ def patched_dash_dependency_init(self, component_id, component_property):
     ):
         original_dash_dependency_init(self, component_id, component_property)
         return
+    callback_component_ids.add(component_key(component_id))
     prefix = page_module_name.replace(".", "_")
     prefix_component_id = prefix_component(prefix, component_id)
-    callback_component_ids.add(prefix_component_key(prefix_component_id))
     print(f"Prefixing callback component_id -> {prefix_component_id}")
     original_dash_dependency_init(self, prefix_component_id, component_property)
 
@@ -144,7 +133,6 @@ def patched_get_context_value():
 
     triggered = getattr(ctx, "triggered_inputs", [])
     items = []
-    module_dir = None
     for item in triggered:
         prefixed_prop_id: str = item["prop_id"]
         if prefixed_prop_id == ".":
@@ -184,11 +172,11 @@ original_dispatch = dash.Dash.dispatch
 def prefix_resp(m, prefix):
     if isinstance(m, dict):
         for k, v in m.items():
-            if k == "id":
+            if k == "id" and component_key(v) in callback_component_ids:
                 m[k] = prefix_component(prefix, v)
             elif isinstance(v, dict):
                 prefix_resp(v, prefix)
-            elif isinstance(v, list):
+            elif isinstance(v, list) and k in ["children", "operations"]:
                 for i in v:
                     prefix_resp(i, prefix)
 
