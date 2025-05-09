@@ -1,11 +1,8 @@
 import dash
-import copy
+import typing
 from dash import _pages, dependencies
 import json
-from dash import _callback
-from typing import Dict, Any
 from dash.dash import _ID_CONTENT, _ID_LOCATION, _ID_STORE, _ID_DUMMY
-from dash._utils import to_json
 from functools import wraps
 import inspect
 
@@ -13,6 +10,7 @@ callback_component_ids = set()
 skip_package_prefixs = ["", "."]
 skip_component_ids = {"url", _ID_CONTENT, _ID_LOCATION, _ID_STORE, _ID_DUMMY}
 prefix_sep = "||"
+pages_root_module = "pages"
 
 
 def prefix_component(prefix: str, component_id):
@@ -45,6 +43,7 @@ def prefix_layout_ids(component, prefix):
     """Recursively prefix IDs in a Dash component tree."""
     if hasattr(component, "id") and component.id:
         if component_key(component.id) not in callback_component_ids:
+            # TODO: If new component are added by set_props, it's id will not be registered in callback_component_ids since there is no Input | State | Output call.
             return
         prefix_component_id = prefix_component(prefix, component.id)
         print(f"Prefixing layout component_id -> {prefix_component_id}")
@@ -61,35 +60,64 @@ def prefix_layout_ids(component, prefix):
 
 
 def find_call_module():
+    # frame = inspect.currentframe()
+    # while frame:
+    #     m = inspect.getmodule(frame)
+    #     # if module name is None, it means we're executing the module in dash._pages, the module initialization is not finished
+    #     if m is not None and m.__name__ is not None:
+    #         print(m.__name__)
+    #     frame = frame.f_back
+
     """Find the frame before dependencies.py to get the callback's directory."""
     frame = inspect.currentframe()
     while frame:
-        # TODO: __package__ is not reliable.
-        if "__package__" in frame.f_locals:
-            page_module_name = frame.f_locals.get("__package__")
-            if page_module_name is None:
-                return None
-            return page_module_name
+        m = inspect.getmodule(frame)
+        # if module name is None, it means we're executing the module in dash._pages, the module initialization is not finished
+        pkg = None
+        if m is None or m.__name__ is None:
+            if "__package__" in frame.f_locals:
+                return frame.f_locals.get("__package__")
+            pkg = ".".join(frame.f_locals.get("__name__").split(".")[:-1])
+            return pkg
+        if m.__name__.startswith(pages_root_module):
+            pkg = m.__name__
+            return pkg
         frame = frame.f_back
     return None
 
 
-def patched_dash_dependency_init(self, component_id, component_property):
-    """Patched DashDependency.__init__ to prefix callback component_id."""
+def get_prefix_by_call_module():
     page_module_name = find_call_module()
     # dash builtin callback will return prefix == None. eg. _pages_location.
-    if (
-        not page_module_name
-        or page_module_name == "."
-        or page_module_name in skip_package_prefixs
-    ):
+    if not page_module_name or page_module_name in skip_package_prefixs:
+        return None
+    prefix = page_module_name.replace(".", "_")
+    return prefix
+
+
+original_dash_dependency_init = dependencies.DashDependency.__init__
+
+
+@wraps(original_dash_dependency_init)
+def patched_dash_dependency_init(self, component_id, component_property):
+    """Patched DashDependency.__init__ to prefix callback component_id."""
+    if isinstance(component_id, str) and component_id in skip_component_ids:
+        original_dash_dependency_init(self, component_id, component_property)
+        return
+    prefix = get_prefix_by_call_module()
+    if not prefix:
         original_dash_dependency_init(self, component_id, component_property)
         return
     callback_component_ids.add(component_key(component_id))
-    prefix = page_module_name.replace(".", "_")
     prefix_component_id = prefix_component(prefix, component_id)
     print(f"Prefixing callback component_id -> {prefix_component_id}")
     original_dash_dependency_init(self, prefix_component_id, component_property)
+
+
+# Apply monkey patches
+dependencies.DashDependency.__init__ = patched_dash_dependency_init
+
+original_import_layouts_from_pages = dash.dash._import_layouts_from_pages
 
 
 def patched_import_layouts_from_pages(pages_folder=None):
@@ -113,12 +141,6 @@ def patched_import_layouts_from_pages(pages_folder=None):
             registry_entry["layout"] = layout
 
 
-# Save original functions
-original_dash_dependency_init = dependencies.DashDependency.__init__
-original_import_layouts_from_pages = dash.dash._import_layouts_from_pages
-
-# Apply monkey patches
-dependencies.DashDependency.__init__ = patched_dash_dependency_init
 dash.dash._import_layouts_from_pages = patched_import_layouts_from_pages
 
 original_get_context_value = dash._callback_context._get_context_value
@@ -128,7 +150,7 @@ original_get_context_value = dash._callback_context._get_context_value
 def patched_get_context_value():
     ctx = original_get_context_value()
     # page_module_name = find_call_module()
-    # if not page_module_name:  # It's called by dash itself. Skip in this case.
+    # if not page_module_name:  # It's called by dash itself. Skip in this case? May cause other problems
     #     return ctx
 
     triggered = getattr(ctx, "triggered_inputs", [])
@@ -143,7 +165,7 @@ def patched_get_context_value():
             original_id = json.dumps(
                 {
                     k: (
-                        v[v.index(prefix_sep) + 1 :]
+                        v[v.index(prefix_sep) + len(prefix_sep) :]
                         if isinstance(v, str) and prefix_sep in v
                         else v
                     )
@@ -200,3 +222,24 @@ def patched_dispatch(self):
 
 # Apply the patch to Dash.dispatch
 dash.Dash.dispatch = patched_dispatch
+
+original_callback_set_props = dash._callback_context.CallbackContext.set_props
+
+
+@wraps(original_callback_set_props)
+def patched_callback_set_props(
+    self, component_id: typing.Union[str, dict], props: dict
+):
+    """
+    Set the props for a component not included in the callback outputs.
+    """
+    prefix = get_prefix_by_call_module()
+    if not prefix:
+        original_callback_set_props(self, component_id, props)
+        return
+    prefix_component_id = prefix_component(prefix, component_id)
+    print(f"Prefixing set_props component_id -> {prefix_component_id}")
+    original_callback_set_props(self, prefix_component_id, props)
+
+
+dash._callback_context.CallbackContext.set_props = patched_callback_set_props

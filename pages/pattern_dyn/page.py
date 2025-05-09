@@ -41,7 +41,7 @@ def display_dropdowns(n_clicks):
     Input({"type": "city-filter-dropdown", "index": ALL}, "value"),
 )
 def display_output(values):
-    print(callback_context.triggered_id)
+    print("triggered by", callback_context.triggered_id)
     return html.Div(
         [html.Div(f"Dropdown {i + 1} = {value}") for (i, value) in enumerate(values)]
     )

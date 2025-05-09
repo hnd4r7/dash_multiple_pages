@@ -8,6 +8,7 @@ dash_clientside.set_props
 - component ID
  _id = stringify_id(component_id)
 
-- callback set_props
+- callback_context set_props
+    - If new component are added by set_props. 
 
 - background=True
