@@ -1,3 +1,4 @@
+import pathlib
 import dash
 import os
 import typing
@@ -8,10 +9,9 @@ from functools import wraps
 import inspect
 
 callback_component_ids = set()
-skip_package_prefixs = ["", "."]
+pages_root_module = "pages"
 skip_component_ids = {"url", _ID_CONTENT, _ID_LOCATION, _ID_STORE, _ID_DUMMY}
 prefix_sep = "||"
-pages_root_module = "pages"
 
 
 def prefix_component(prefix: str, component_id):
@@ -40,21 +40,15 @@ def find_call_module():
         call_location = os.path.normcase(frame.f_code.co_filename)
         cwd = os.path.normcase(os.getcwd())
         if call_location.startswith(cwd):
-            module_name = os.path.splitext(os.path.relpath(call_location, start=cwd))[0].replace(os.sep, ".")
-            if module_name and not module_name == __name__:
-                package_name, _, _ = module_name.rpartition(".")  # TODO contains 2 package level at most
-                return package_name
+            relpath = os.path.relpath(call_location, start=cwd)
+            module_path = os.path.splitext(relpath)[0].split(os.sep)
+            # this = __name__
+            if module_path and not ".".join(module_path) == __name__ and module_path[0] == pages_root_module:
+                # module_name = module_path[-1]
+                module_parent = module_path[:-1]
+                return "_".join(module_parent[:2])  # contains 2 package level at most.
         frame = frame.f_back
     return None
-
-
-def get_prefix_by_call_module():
-    page_module_name = find_call_module()
-    # dash builtin callback will return prefix == None. eg. _pages_location.
-    if not page_module_name or page_module_name in skip_package_prefixs:
-        return None
-    prefix = page_module_name.replace(".", "_")
-    return prefix
 
 
 original_dash_dependency_init = dependencies.DashDependency.__init__
@@ -66,7 +60,7 @@ def patched_dash_dependency_init(self, component_id, component_property):
     if isinstance(component_id, str) and component_id in skip_component_ids:
         original_dash_dependency_init(self, component_id, component_property)
         return
-    prefix = get_prefix_by_call_module()
+    prefix = find_call_module()
     if not prefix:
         original_dash_dependency_init(self, component_id, component_property)
         return
@@ -89,7 +83,7 @@ def patched_component_init(self, **kwargs):
         # if component_key(self.id) not in callback_component_ids:
         #     # TODO: If new component are added by set_props, it's id will not be registered in callback_component_ids since there is no Input | State | Output call.
         #     return
-        prefix = get_prefix_by_call_module()
+        prefix = find_call_module()
         if not prefix:
             return
         if isinstance(self.id, str) and self.id in skip_component_ids:
@@ -148,7 +142,7 @@ def patched_callback_set_props(self, component_id: typing.Union[str, dict], prop
     """
     Set the props for a component not included in the callback outputs.
     """
-    prefix = get_prefix_by_call_module()
+    prefix = find_call_module()
     if not prefix:
         original_callback_set_props(self, component_id, props)
         return
