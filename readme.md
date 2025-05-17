@@ -1,6 +1,15 @@
 # Motivation
 Dash operates as a Single-Page Application (SPA), meaning the entire application runs within a single browser page, and page navigation typically involves dynamically updating the content of a container (e.g., page-content or dash.page_container) without a full page reload.
 
+The multi-app pattern was never officially documented or supported.
+
+One solution is add prefix to both layout and callback automatically by monkey patching dash internals.
+
+Since the component id are used inside the source code , we must unprefix it before it came out of dash internal code, but we must also keep it unique across the whole python process, so there is no way we can came up with a perfect dropin replacement.
+- replace @dash with @section
+: what ever you do inside the decorator, the hard-coded component id inside the source code canot be changed.
+
+
 Duplicate Callback Output:
 Callbacks Are Shared Across Pages! If there is duplicate component and a callback references the duplicate component and is active across multiple pages, it may behave unexpectedly because Dash won't know which to target when the callback is triggered.
 In this repo, pages/home and pages/analytics contains duplicate callback output id, thus causing conflicts.
@@ -28,3 +37,13 @@ dash_clientside.set_props
     - If new component are added by set_props. 
 
 - background=True
+
+Ref:
+we must split those apps into different process if we want to isolate dash apps because dash have a few global pkg-dependent states registered inside the global state like dash._callback.GLOBAL_CALLBACK_LIST and dash._callback.GLOBAL_CALLBACK_MAP.
+https://github.com/plotly/dash/issues/2812
+https://github.com/mckinsey/vizro/issues/109#issuecomment-1765733474
+- All In One compoennt
+https://dash.plotly.com/all-in-one-components
+- dash-building-block
+id=self.register('dropdown'),
+https://dash-building-blocks.readthedocs.io/en/latest/motivation.html
